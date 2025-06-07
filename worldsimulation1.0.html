@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WorldBox JS Sim</title>
+  <style>
+    /* Reset and base */
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+        Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+      margin: 0;
+      padding: 12px;
+      background: #f0f2f5;
+      color: #222;
+      display: flex;
+      height: 100vh;
+      user-select: none;
+    }
+
+    #sidebar {
+      display: flex;
+      flex-direction: column;
+      width: 180px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgb(0 0 0 / 0.1);
+      padding: 16px;
+      gap: 20px;
+      flex-shrink: 0;
+    }
+
+    #tools {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    #tools button {
+      padding: 10px 8px;
+      font-size: 14px;
+      border: 1.5px solid #ccc;
+      border-radius: 6px;
+      background-color: #fafafa;
+      color: #333;
+      cursor: pointer;
+      transition: background-color 0.2s, border-color 0.2s;
+      user-select: none;
+    }
+    #tools button:hover {
+      background-color: #e6f0ff;
+      border-color: #6495ed;
+      color: #1a3a8a;
+    }
+    #tools button.selected {
+      background-color: #3b82f6;
+      border-color: #2563eb;
+      color: white;
+      font-weight: 600;
+    }
+
+    #actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    #actions button {
+      padding: 10px;
+      font-size: 14px;
+      border-radius: 6px;
+      border: none;
+      background-color: #2563eb;
+      color: white;
+      cursor: pointer;
+      transition: background-color 0.2s;
+      user-select: none;
+    }
+    #actions button:hover {
+      background-color: #1d4ed8;
+    }
+
+    #info {
+      font-size: 14px;
+      color: #555;
+      text-align: center;
+      user-select: none;
+    }
+
+    canvas {
+      flex-grow: 1;
+      border-radius: 8px;
+      background-color: white;
+      border: 1px solid #bbb;
+      image-rendering: pixelated;
+      cursor: grab;
+      box-shadow: 0 2px 10px rgb(0 0 0 / 0.1);
+      align-self: stretch;
+    }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <div id="tools" role="group" aria-label="Tool selection">
+      <button id="tool-land" onclick="setTool('land')">Land</button>
+      <button id="tool-water" onclick="setTool('water')">Water</button>
+      <button id="tool-creature" onclick="setTool('creature')">Creature</button>
+      <button id="tool-fire" onclick="setTool('fire')">Fire</button>
+      <button id="tool-civilization" onclick="setTool('civilization')">Civilization</button>
+    </div>
+
+    <div id="actions" role="group" aria-label="Simulation controls">
+      <button onclick="togglePause()" id="pauseBtn">Pause</button>
+      <button onclick="changeSpeed(0.5)">Slower</button>
+      <button onclick="changeSpeed(2)">Faster</button>
+      <button onclick="saveGame()">Save</button>
+      <button onclick="loadGame()">Load</button>
+      <button onclick="resetWorld()">Reset</button>
+    </div>
+
+    <div id="info" aria-live="polite">
+      Season: <span id="season">Spring</span>
+    </div>
+  </div>
+
+  <canvas id="game" width="800" height="600" tabindex="0" aria-label="WorldBox simulation canvas"></canvas>
+
+<script>
+  // Constants & Setup
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  const TILE_SIZE = 10;
+  const WIDTH = 200;   // tiles horizontally
+  const HEIGHT = 150;  // tiles vertically
+
+  let scale = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+  let dragging = false;
+  let lastX, lastY;
+
+  const seasons = ["Spring", "Summer", "Autumn", "Winter"];
+  let tick = 0;
+  let speed = 1;
+  let paused = false;
+  let currentTool = 'land';
+
+  // World data structures
+  const world = [];
+  const creatures = [];
+  const civs = [];
+
+  // Initialize world with mostly land and some water, random trees, and base biome
+  function initWorld() {
+    for (let y = 0; y < HEIGHT; y++) {
+      world[y] = [];
+      for (let x = 0; x < WIDTH; x++) {
+        world[y][x] = {
+          type: Math.random() < 0.3 ? 'water' : 'land',
+          fire: false,
+          civ: null,
+          tree: Math.random() < 0.1,
+          rain: false,
+          temp: 20 + Math.random() * 10,
+          biome: 'plains'
+        };
+      }
+    }
+    creatures.length = 0;
+    civs.length = 0;
+    tick = 0;
+    paused = false;
+    speed = 1;
+    offsetX = 0;
+    offsetY = 0;
+    scale = 1;
+  }
+
+  initWorld();
+
+  // --- Sprites ---
+
+  const spriteSize = TILE_SIZE;
+  const sprites = {};
+
+  // Create a simple striped sprite for terrain types
+  function createSprite(color, stripeColor) {
+    const off = document.createElement('canvas');
+    off.width = spriteSize;
+    off.height = spriteSize;
+    const ctxOff = off.getContext('2d');
+    ctxOff.fillStyle = color;
+    ctxOff.fillRect(0, 0, spriteSize, spriteSize);
+    ctxOff.strokeStyle = stripeColor;
+    ctxOff.lineWidth = 1;
+    for(let i = -spriteSize; i < spriteSize*2; i += 4) {
+      ctxOff.beginPath();
+      ctxOff.moveTo(i, 0);
+      ctxOff.lineTo(i - spriteSize, spriteSize);
+      ctxOff.stroke();
+    }
+    return off;
+  }
+
+  sprites.land = createSprite('#88cc66', '#559944');
+  sprites.water = createSprite('#3399ff', '#2277dd');
+  sprites.tree = createSprite('#228833', '#115522');
+  sprites.fire = createSprite('orange', '#cc6600');
+  sprites.creature = createSprite('red', '#880000');
+
+  // Civilization sprites with hue shift for variety
+  function createCivSprite(hue) {
+    const off = document.createElement('canvas');
+    off.width = spriteSize;
+    off.height = spriteSize;
+    const ctxOff = off.getContext('2d');
+    ctxOff.fillStyle = `hsl(${hue}, 80%, 60%)`;
+    ctxOff.fillRect(0, 0, spriteSize, spriteSize);
+    ctxOff.strokeStyle = `hsl(${hue}, 50%, 40%)`;
+    ctxOff.lineWidth = 2;
+    ctxOff.strokeRect(2, 2, spriteSize - 4, spriteSize - 4);
+    return off;
+  }
+
+  const civSpriteCache = new Map();
+  function getCivSprite(id) {
+    if (!civSpriteCache.has(id)) {
+      const sprite = createCivSprite((id * 50) % 360);
+      civSpriteCache.set(id, sprite);
+    }
+    return civSpriteCache.get(id);
+  }
+
+  // --- Tool Selection ---
+  function setTool(tool) {
+    currentTool = tool;
+    document.querySelectorAll('#tools button').forEach(btn => btn.classList.remove('selected'));
+    document.getElementById('tool-' + tool).classList.add('selected');
+  }
+  setTool('land');
+
+  // --- Pause Toggle ---
+  function togglePause() {
+    paused = !paused;
+    document.getElementById("pauseBtn").textContent = paused ? "Play" : "Pause";
+  }
+
+  // --- Change Speed ---
+  function changeSpeed(factor) {
+    speed = Math.max(0.1, speed * factor);
+  }
+
+  // --- Save & Load ---
+  function saveGame() {
+    const save = {
+      world,
+      creatures,
+      civs,
+      tick,
+      speed,
+      paused,
+      offsetX,
+      offsetY,
+      scale
+    };
+    localStorage.setItem('worldbox-save', JSON.stringify(save));
+    alert("Game saved!");
+  }
+
+  function loadGame() {
+    const save = localStorage.getItem('worldbox-save');
+    if (save) {
+      const data = JSON.parse(save);
+      for (let y = 0; y < HEIGHT; y++) {
+        for (let x = 0; x < WIDTH; x++) {
+          if (data.world[y] && data.world[y][x]) {
+            Object.assign(world[y][x], data.world[y][x]);
+          }
+        }
+      }
+      creatures.length = 0;
+      data.creatures?.forEach(c => creatures.push({ ...c }));
+      civs.length = 0;
+      data.civs?.forEach(c => civs.push({ ...c, members: [...c.members], buildings: [...c.buildings] }));
+      tick = data.tick || 0;
+      speed = data.speed || 1;
+      paused = data.paused || false;
+      offsetX = data.offsetX || 0;
+      offsetY = data.offsetY || 0;
+      scale = data.scale || 1;
+      document.getElementById("pauseBtn").textContent = paused ? "Play" : "Pause";
+      alert("Game loaded!");
+    } else {
+      alert("No save found.");
+    }
+  }
+
+  // --- Reset World ---
+  function resetWorld() {
+    if (confirm("Reset the world? This will erase all progress.")) {
+      initWorld();
+    }
+  }
+
+  // --- Canvas Drag & Zoom ---
+
+  canvas.addEventListener('mousedown', (e) => {
+    dragging = true;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    canvas.style.cursor = 'grabbing';
+  });
+  canvas.addEventListener('mouseup', () => {
+    dragging = false;
+    canvas.style.cursor = 'grab';
+  });
+  canvas.addEventListener('mouseleave', () => {
+    dragging = false;
+    canvas.style.cursor = 'grab';
+  });
+  canvas.addEventListener('mousemove', (e) => {
+    if (dragging) {
+      offsetX += (e.clientX - lastX);
+      offsetY += (e.clientY - lastY);
+      lastX = e.clientX;
+      lastY = e.clientY;
+    }
+  });
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const oldScale = scale;
+    scale *= e.deltaY < 0 ? 1.1 : 0.9;
+    scale = Math.min(Math.max(scale, 0.5), 10);
+
+    // Adjust offset so zoom centers on mouse position
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    offsetX -= (mx / oldScale - mx / scale);
+    offsetY -= (my / oldScale - my / scale);
+  });
+
+  // --- Click to Modify Tiles ---
+
+  canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left - offsetX) / (TILE_SIZE * scale));
+    const y = Math.floor((e.clientY - rect.top - offsetY) / (TILE_SIZE * scale));
+    if (x < 0 || y < 0 || x >= WIDTH || y >= HEIGHT) return;
+    const tile = world[y][x];
+
+    switch(currentTool) {
+      case 'land':
+      case 'water':
+        tile.type = currentTool;
+        tile.fire = false;
+        tile.tree = false;
+        tile.civ = null;
+        break;
+      case 'creature':
+        if (tile.type === 'land') {
+          creatures.push({ x, y });
+        }
+        break;
+      case 'fire':
+        if (tile.type === 'land') {
+          tile.fire = true;
+          tile.tree = false;
+        }
+        break;
+      case 'civilization':
+        if (tile.type === 'land' && tile.civ === null) {
+          const id = civs.length + 1;
+          tile.civ = id;
+          civs.push({ id, members: [{ x, y }], buildings: [] });
+        }
+        break;
+    }
+  });
+
+  // --- Simulation Update ---
+
+  function update() {
+    if (paused) return;
+
+    for (let s = 0; s < speed; s++) {
+      tick++;
+      document.getElementById("season").textContent = seasons[Math.floor(tick / 300) % 4];
+
+      // Move creatures randomly on land
+      for (const c of creatures) {
+        const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+        const dir = dirs[Math.floor(Math.random()*dirs.length)];
+        const nx = c.x + dir[0];
+        const ny = c.y + dir[1];
+        if (nx >= 0 && ny >= 0 && nx < WIDTH && ny < HEIGHT && world[ny][nx].type === 'land') {
+          c.x = nx; c.y = ny;
+        }
+      }
+
+      // Fire spread and tree growth
+      for (let y = 0; y < HEIGHT; y++) {
+        for (let x = 0; x < WIDTH; x++) {
+          const tile = world[y][x];
+
+          // Fire spreads to adjacent land tiles and burns out trees
+          if (tile.fire && tile.type === 'land') {
+            const neighbors = [[0,1],[0,-1],[1,0],[-1,0]];
+            neighbors.forEach(([dx,dy]) => {
+              const nx = x + dx;
+              const ny = y + dy;
+              if (nx >= 0 && ny >= 0 && nx < WIDTH && ny < HEIGHT) {
+                const nt = world[ny][nx];
+                if (nt.type === 'land' && !nt.fire && Math.random() < 0.1) {
+                  nt.fire = true;
+                }
+              }
+            });
+            if (Math.random() < 0.02) tile.fire = false; // fire burns out
+            tile.tree = false; // fire burns trees
+          }
+
+          // Trees grow on land if no fire
+          if (!tile.tree && tile.type === 'land' && Math.random() < 0.005) {
+            tile.tree = true;
+          }
+
+          // Random rain toggle
+          if (Math.random() < 0.01) {
+            tile.rain = !tile.rain;
+          }
+        }
+      }
+
+      // Civilization expansion and conflict
+      for (const civ of civs) {
+        for (const m of [...civ.members]) {
+          const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+          const dir = dirs[Math.floor(Math.random()*dirs.length)];
+          const nx = m.x + dir[0];
+          const ny = m.y + dir[1];
+          if (nx >= 0 && ny >= 0 && nx < WIDTH && ny < HEIGHT) {
+            const tile = world[ny][nx];
+            if (tile.type === 'land') {
+              if (tile.civ === null) {
+                // Expand into empty land
+                tile.civ = civ.id;
+                civ.members.push({ x: nx, y: ny });
+              } else if (tile.civ !== civ.id && Math.random() < 0.2) {
+                // Fight and conquer enemy tile
+                tile.civ = civ.id;
+                const enemy = civs.find(c => c.id !== civ.id && c.members.some(p => p.x === nx && p.y === ny));
+                if (enemy) {
+                  enemy.members = enemy.members.filter(p => !(p.x === nx && p.y === ny));
+                }
+              }
+              // Occasionally add buildings
+              if (Math.random() < 0.01) {
+                civ.buildings.push({ x: nx, y: ny });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // --- Draw function ---
+
+  function draw() {
+    ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+    ctx.clearRect(-offsetX / scale, -offsetY / scale, canvas.width / scale, canvas.height / scale);
+
+    const useSprites = scale >= 2;
+
+    for (let y = 0; y < HEIGHT; y++) {
+      for (let x = 0; x < WIDTH; x++) {
+        const tile = world[y][x];
+
+        if (useSprites) {
+          let sprite;
+          if (tile.fire) sprite = sprites.fire;
+          else if (tile.civ) sprite = getCivSprite(tile.civ);
+          else if (tile.tree) sprite = sprites.tree;
+          else if (tile.type === 'land') sprite = sprites.land;
+          else sprite = sprites.water;
+
+          ctx.drawImage(sprite, x * TILE_SIZE, y * TILE_SIZE);
+
+          // Rain overlay
+          if (tile.rain) {
+            ctx.fillStyle = 'rgba(100,150,255,0.3)';
+            ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+          }
+        } else {
+          // Simple color mode for zoomed out view
+          ctx.fillStyle = tile.type === 'land' ? '#88cc66' : '#3399ff';
+          if (tile.tree) ctx.fillStyle = '#228833';
+          if (tile.fire) ctx.fillStyle = 'orange';
+          if (tile.civ) ctx.fillStyle = `hsl(${tile.civ * 50 % 360}, 80%, 60%)`;
+          ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+
+          if (tile.rain) {
+            ctx.fillStyle = 'rgba(100,150,255,0.3)';
+            ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+          }
+        }
+      }
+    }
+
+    // Draw creatures as red circles
+    ctx.fillStyle = 'red';
+    for (const c of creatures) {
+      ctx.beginPath();
+      ctx.arc(c.x * TILE_SIZE + TILE_SIZE / 2, c.y * TILE_SIZE + TILE_SIZE / 2, TILE_SIZE / 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Draw buildings for civilizations as small squares
+    civs.forEach(civ => {
+      ctx.fillStyle = `hsl(${civ.id * 50 % 360}, 80%, 40%)`;
+      civ.buildings.forEach(b => {
+        ctx.fillRect(b.x * TILE_SIZE + 3, b.y * TILE_SIZE + 3, TILE_SIZE - 6, TILE_SIZE - 6);
+      });
+    });
+  }
+
+  // --- Main loop ---
+  function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  loop();
+
+</script>
+</body>
+</html>
